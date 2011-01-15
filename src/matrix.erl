@@ -21,8 +21,7 @@
 ]).
 
 
-%% File: "matrix.erl"
-%% ------------------
+% Types
 -type matrix() :: [[any(), ...]].
 -type int_matrix() :: [[integer(), ...]].
 -type num_matrix() :: [[number(), ...]].
@@ -41,7 +40,8 @@ new(Columns, Rows) ->
     [[0 || _ <- lists:seq(1, Columns)] || _ <- lists:seq(1, Rows)].
 
 % Creates a rectangular matrix using the specified function to generate elements.
--spec new(pos_integer(), pos_integer(), fun(pos_integer(), pos_integer(), pos_integer(), pos_integer() -> any())) -> matrix().
+-spec new(pos_integer(), pos_integer(), 
+    fun((pos_integer(), pos_integer(), pos_integer(), pos_integer()) -> any())) -> matrix().
 new(Columns, Rows, ContentGenerator) ->
     [[ContentGenerator(Column, Row, Columns, Rows) || Column <- lists:seq(1, Columns)] || Row <- lists:seq(1, Rows)].
 
@@ -83,20 +83,23 @@ element_set(ElementColumn, ElementRow, Value, Matrix) ->
             end
         end).
 
--spec row(pos_integer(), matrix()) -> [any(), ...]
+% Returns the specified row from the specified matrix.
+-spec row(pos_integer(), matrix()) -> [any(), ...].
 row(Row, Matrix) ->
     lists:nth(Row, Matrix).
 
--spec column(pos_integer(), matrix()) -> [any(), ...]
+% Returns the specified column from the specified matrix.
+-spec column(pos_integer(), matrix()) -> [any(), ...].
 column(Column, Matrix) ->
     [lists:nth(Column, Row) || Row <- Matrix].
 
+% Returns a tuple containing the dimensions of the supplied matrix.
 -spec dimensions(matrix()) -> {pos_integer(), pos_integer()}.
 dimensions(Matrix) ->
     {length(lists:nth(1, Matrix)), length(Matrix)}.
 
 % Returns the product of two matrices.
--spec mutiply(num_matrix(), num_matrix()) -> num_matrix().
+-spec multiply(num_matrix(), num_matrix()) -> num_matrix().
 multiply(A, B) ->
     Count = length(lists:nth(1, A)),
     matrix:new(Count, length(A), fun(Column, Row, _, _) ->
