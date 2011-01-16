@@ -1,22 +1,26 @@
 % Matrix module.
 -module(matrix).
 
--export([new/1, 
+-export([
+    add/2,
+    column/2,
+    cumulative_maximum/1,
+    cumulative_minimum/1,
+    dimensions/1,
+    element_at/3,
+    element_count/1,
+    element_set/4,
+    identity/1,
+    maximise_assignment/1,
+    multiply/2,
+    new/1, 
     new/2, 
     new/3,
-    random/3,
-    sequential/2,
-    identity/1,
-    element_count/1,
-    element_at/3,
-    scalar_multiply/2,
     power/2,
-    add/2,
-    multiply/2,
+    random/3,
+    scalar_multiply/2,
+    sequential/2,
     sum/1,
-    dimensions/1,
-    element_set/4,
-    column/2,
     row/2
 ]).
 
@@ -27,7 +31,7 @@
 -type num_matrix() :: [[number(), ...]].
 
 % Convenience function to create a square matrix.
--spec new(integer()) -> [[any()]].
+-spec new(integer()) -> matrix().
 new(Size) ->
     new(Size, Size).
 
@@ -155,3 +159,35 @@ add(A, B) ->
 -spec sum(num_matrix()) -> number().
 sum(Matrix) ->
     lists:sum(lists:flatten(Matrix)).
+
+% Given a numeric matrix, returns a list which is formed recursively from the 
+% sum of the maximum value from each row up to an including this one.
+-spec cumulative_maximum(num_matrix()) -> [number(), ...].
+cumulative_maximum(Matrix) ->
+    cumulative(Matrix, fun lists:max/1).
+
+cumulative_minimum(Matrix) ->
+    cumulative(Matrix, fun lists:min/1).
+
+% Accumulates a matrix, given a specified accumulator function.
+-spec cumulative(matrix(), fun(([number()]) -> number())) -> [number(),...].
+cumulative(Matrix, Function) ->
+    {Return, _} = lists:mapfoldl(fun(Row, Sum) ->
+            % Add to the running total and store to running total for next iteration.
+            Partial = Function(Row) + Sum,
+            {Partial, Partial}
+        end,
+        0,
+        Matrix
+    ),
+    Return.
+
+
+% Given a matrix, maximises the total obtainable by taking at most one element
+% from each column and each row (the assignment problem).  Returns the total
+% and a list of column/row pairs used in the solution.
+%
+% See http://en.wikipedia.org/wiki/Assignment_problem
+-spec maximise_assignment(num_matrix()) -> {float(), [{integer(), integer()}]}.
+maximise_assignment(Matrix) ->
+    Matrix.
