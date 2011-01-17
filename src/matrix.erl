@@ -197,10 +197,37 @@ maximise_assignment(Matrix) ->
         end
     ),
     io:format("Matrix is: ~p~n", [Matrix]),
-    Answer = maximise_assignment(PreparedMatrix, 0, 0, 0, Max, CumulativeMaximums),
+    GreedyMaximum = quick_maximise(PreparedMatrix),
+    Answer = maximise_assignment(PreparedMatrix, 0, 0, GreedyMaximum, Max, CumulativeMaximums),
     io:format("Answer is: ~p~n", [Answer]).
 
 
+% Potential Improvements:
+% Parallelise.
+% Don't check best so far every single call.
+% bor instead of + for bitmask update.
+% ets storage of partial bitmasks.
+%
+
+quick_maximise(Matrix) ->
+    quick_maximise(Matrix, 0, 0).
+
+quick_maximise([], _, Total) ->
+    Total;
+quick_maximise([Row | Matrix], ColumnBitMask, Total) ->
+    {BestMask, BestValue} = lists:foldl(fun({Mask, Value}, {MaskMax, Max}) ->
+                case ((Mask band ColumnBitMask) == 0) andalso
+                    Value > Max of
+                    true ->
+                        {Mask, Value};
+                    false ->
+                        {MaskMax, Max}
+                end
+        end,
+        {0,0},
+        Row
+    ),
+    quick_maximise(Matrix, BestMask + ColumnBitMask, BestValue + Total).
 
 maximise_assignment([], _, Total, BestSoFar, _, _) when Total > BestSoFar ->
     % We reached the end and this better than the best so far, so return that value.
@@ -211,17 +238,21 @@ maximise_assignment([], _, _, BestSoFar, _, _) ->
     %io:format("Reached the end. BestSoFar is ~p~n", [BestSoFar]),
     BestSoFar;
 maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, MaxPossible, [MaxFromHere | CumulativeMaximums]) ->
-    case BestSoFar of
-        MaxPossible ->
+  %  case BestSoFar of
+  %      MaxPossible ->
             % Early Termination Test 1:
-            % We have luckily found a path that equals the maximum possible total through the matrix, so don't need to do anything else.
-            BestSoFar;
-        _ ->
+            % We have luckily found a path that equals the maximum possible total through the matrix, so don't need to do anything else. This is a poor optimisation as
+            % the chances of hitting the best path decrease super-linearly with the
+            % number of rows or columns.
+  %          BestSoFar;
+  %      _ ->
             % Early Termination Test 2:
             % Do a quick check to see what the maximum possible is from this position,
             % assuming we took the maximum from each subsequent row.  (We know this
             % value because we pre-calculated cumulative maximums).  If we can't do
             % better than the best, we don't need to go any further along this branch.
+            %
+            % This is a really good optimisation.
             case (Total + MaxFromHere) =< BestSoFar of
                 true ->
                     % Can't do better than the best from here, so terminate early.
@@ -260,5 +291,5 @@ maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, MaxPossible
                         BestSoFar,
                         SortedAvailableColumns
                     )
-            end
-    end.
+            end.
+  %  end.
