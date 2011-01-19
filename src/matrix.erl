@@ -189,107 +189,83 @@ cumulative(Matrix, Function) ->
 % See http://en.wikipedia.org/wiki/Assignment_problem
 -spec maximise_assignment(num_matrix()) -> {float(), [{integer(), integer()}]}.
 maximise_assignment(Matrix) ->
-    [Max | _] = CumulativeMaximums = lists:reverse(cumulative_maximum(lists:reverse(Matrix))),
+    CumulativeMaximums = lists:reverse(cumulative_maximum(lists:reverse(Matrix))),
     {Width, Height} = matrix:dimensions(Matrix),
     PreparedMatrix = matrix:new(Width, Height, 
         fun(Column, Row, Columns, _) ->
                 {1 bsl (Columns - Column), matrix:element_at(Column, Row, Matrix)}
         end
     ),
+    ets:new(assignment, [private, named_table]),
     io:format("Matrix is: ~p~n", [Matrix]),
-    GreedyMaximum = quick_maximise(PreparedMatrix),
-    Answer = maximise_assignment(PreparedMatrix, 0, 0, GreedyMaximum, Max, CumulativeMaximums),
+    Answer = maximise_assignment(PreparedMatrix, 0, 0, 0, CumulativeMaximums),
+    ets:delete(assignment),
     io:format("Answer is: ~p~n", [Answer]).
 
 
 % Potential Improvements:
 % Parallelise.
-% Don't check best so far every single call.
-% bor instead of + for bitmask update.
 % ets storage of partial bitmasks.
 %
 
-quick_maximise(Matrix) ->
-    quick_maximise(Matrix, 0, 0).
-
-quick_maximise([], _, Total) ->
-    Total;
-quick_maximise([Row | Matrix], ColumnBitMask, Total) ->
-    {BestMask, BestValue} = lists:foldl(fun({Mask, Value}, {MaskMax, Max}) ->
-                case ((Mask band ColumnBitMask) == 0) andalso
-                    Value > Max of
-                    true ->
-                        {Mask, Value};
-                    false ->
-                        {MaskMax, Max}
-                end
-        end,
-        {0,0},
-        Row
-    ),
-    quick_maximise(Matrix, BestMask + ColumnBitMask, BestValue + Total).
-
-maximise_assignment([], _, Total, BestSoFar, _, _) when Total > BestSoFar ->
+maximise_assignment([], _, Total, BestSoFar, _) when Total > BestSoFar ->
     % We reached the end and this better than the best so far, so return that value.
     %io:format("Reached the end. Total is ~p, BestSoFar is ~p~n", [Total, BestSoFar]),
     Total;
-maximise_assignment([], _, _, BestSoFar, _, _) ->
+maximise_assignment([], _, _, BestSoFar, _) ->
     % We reached the end, but it's less than the best so far, so skip it.
     %io:format("Reached the end. BestSoFar is ~p~n", [BestSoFar]),
     BestSoFar;
-maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, MaxPossible, [MaxFromHere | CumulativeMaximums]) ->
-  %  case BestSoFar of
-  %      MaxPossible ->
-            % Early Termination Test 1:
-            % We have luckily found a path that equals the maximum possible total through the matrix, so don't need to do anything else. This is a poor optimisation as
-            % the chances of hitting the best path decrease super-linearly with the
-            % number of rows or columns.
-  %          BestSoFar;
-  %      _ ->
-            % Early Termination Test 2:
-            % Do a quick check to see what the maximum possible is from this position,
-            % assuming we took the maximum from each subsequent row.  (We know this
-            % value because we pre-calculated cumulative maximums).  If we can't do
-            % better than the best, we don't need to go any further along this branch.
-            %
-            % This is a really good optimisation.
-            case (Total + MaxFromHere) =< BestSoFar of
-                true ->
-                    % Can't do better than the best from here, so terminate early.
-                    %io:format("Early termination 2~n"),
-                    BestSoFar;
-                false ->
-                    % Otherwise, we have to keep going, sort the cells in this row 
-                    % descending by value, aftering filtering out those that already 
-                    % are used according to the column bitmask.
-                    SortedAvailableColumns = lists:reverse(
-                        lists:keysort(2, 
-                            lists:filter(fun({Mask, _}) -> 
-                                    (Mask band ColumnBitMask) == 0
-                                end,
-                                Row
+maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHere | CumulativeMaximums]) ->
+        io:format("ColumnBitMask is ~p~n", [ColumnBitMask]),
+        case ets:lookup(assignment, ColumnBitMask) of
+            [{ColumnBitMask, Result}] ->
+                io:format("Found the best from the cache: ~w~n", [Result]),
+                Result;
+            [] ->
+                % Early Termination Test 1:
+                % Do a quick check to see what the maximum possible is from this position,
+                % assuming we took the maximum from each subsequent row.  (We know this
+                % value because we pre-calculated cumulative maximums).  If we can't do
+                % better than the best, we don't need to go any further along this branch.
+                %
+                % This is a really good optimisation.
+                Result = case (Total + MaxFromHere) =< BestSoFar of
+                    true ->
+                        % Can't do better than the best from here, so terminate early.
+                        %io:format("Early termination 2~n"),
+                        BestSoFar;
+                    false ->
+                        % Otherwise, we have to keep going, sort the cells in this row 
+                        % descending by value, aftering filtering out those that already 
+                        % are used according to the column bitmask.
+                        SortedAvailableColumns = lists:reverse(
+                            lists:keysort(2, 
+                                lists:filter(fun({Mask, _}) -> 
+                                        (Mask band ColumnBitMask) == 0
+                                    end,
+                                    Row
+                                )
                             )
+                        ),
+
+                        lists:foldl(fun({Mask, Value}, BestSoFarIncrement) ->
+                                PathAnswer = maximise_assignment(Matrix, ColumnBitMask bor Mask, Total + Value, BestSoFarIncrement, CumulativeMaximums),
+                                case PathAnswer > BestSoFarIncrement of
+                                    true ->
+                                        % The path starting from this column is better than the
+                                        % best so far so store that result as the answer.
+                                        PathAnswer;
+                                    false ->
+                                        % The path starting from this column is less valuable 
+                                        % than the best so far, so stick with what we have.
+                                        BestSoFarIncrement
+                                end
+                            end,
+                            BestSoFar,
+                            SortedAvailableColumns
                         )
-                    ),
-
-                    %io:format("ColumnBitMask is ~p~n", [ColumnBitMask]),
-                    %io:format("Available columns are~p~n", [SortedAvailableColumns]),
-
-                    lists:foldl(fun({Mask, Value}, BestSoFarIncrement) ->
-                            PathAnswer = maximise_assignment(Matrix, ColumnBitMask + Mask, Total + Value, BestSoFarIncrement, MaxPossible, CumulativeMaximums),
-                            case PathAnswer > BestSoFarIncrement of
-                                true ->
-                                    % The path starting from this column is better than the best so far
-                                    % so store that result as the answer.
-                                    PathAnswer;
-                                false ->
-                                    % The path starting from this column is less valuable than the best
-                                    % so far, so stick with what we have.
-                                    BestSoFarIncrement
-                            end
-                        end,
-                        BestSoFar,
-                        SortedAvailableColumns
-                    )
-            end.
-  %  end.
+                end,
+                ets:insert(assignment, {ColumnBitMask, Result}),
+                Result
+        end.
