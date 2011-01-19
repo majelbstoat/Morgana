@@ -19,6 +19,7 @@
     new/3,
     power/2,
     random/3,
+    row_sort/2,
     scalar_multiply/2,
     sequential/2,
     sum/1,
@@ -41,7 +42,7 @@ new(Size) ->
 new(Size, ContentGenerator) when is_function(ContentGenerator, 4) ->
     new(Size, Size, ContentGenerator);
 new(Columns, Rows) ->
-% Creates a rectangular matrix initialised to 0.
+    % Creates a rectangular matrix initialised to 0.
     [[0 || _ <- lists:seq(1, Columns)] || _ <- lists:seq(1, Rows)].
 
 % Creates a rectangular matrix using the specified function to generate elements.
@@ -183,6 +184,24 @@ cumulative(Matrix, Function) ->
     ),
     Return.
 
+% Sorts elements within matrix rows, row by row, using the supplied sorting function.
+row_sort(Sorter, Matrix) ->
+   [lists:sort(Sorter, Row) || Row <- Matrix]. 
+
+quick_maximise(Matrix) ->
+    quick_maximise(Matrix, 0, 0).
+
+quick_maximise([], _, Total) ->
+    Total;
+quick_maximise([Row | Matrix], ColumnBitMask, Total) ->
+    [{BestMask, BestValue} | _] = lists:filter(fun({Mask, _}) ->
+            Mask band ColumnBitMask == 0
+        end,
+        Row
+    ),
+    quick_maximise(Matrix, BestMask + ColumnBitMask, BestValue + Total).
+
+
 % Given a matrix, maximises the total obtainable by taking at most one element
 % from each column and each row (the assignment problem).  Returns the total
 % and a list of column/row pairs used in the solution.
@@ -195,62 +214,87 @@ cumulative(Matrix, Function) ->
 % opportunities to terminate early.
 -spec maximise_assignment(num_matrix()) -> {float(), [{integer(), integer()}]}.
 maximise_assignment(Matrix) ->
-    CumulativeMaximums = lists:reverse(cumulative_maximum(lists:reverse(Matrix))),
+    [_ | CumulativeMaximums] = lists:reverse(cumulative_maximum(lists:reverse(Matrix))),
     {Width, Height} = matrix:dimensions(Matrix),
-    PreparedMatrix = matrix:new(Width, Height, 
-        fun(Column, Row, Columns, _) ->
-                {1 bsl (Columns - Column), matrix:element_at(Column, Row, Matrix)}
-        end
+    [Row | PreparedMatrix] = matrix:row_sort(fun({_,X}, {_,Y}) -> X > Y end,
+        matrix:new(Width, Height, 
+            fun(Column, Row, Columns, _) ->
+                    {1 bsl (Columns - Column), matrix:element_at(Column, Row, Matrix)}
+            end
+        )
     ),
-    maximise_assignment(PreparedMatrix, 0, 0, 0, CumulativeMaximums).
+    %GreedyMaximum = quick_maximise(PreparedMatrix),
+    %io:format("Greedy maximum is ~p~n", [GreedyMaximum]),
+    
+    parallel_map(fun({Mask, Value}, ParentPid) ->
+            maximise_assignment(PreparedMatrix, Mask, Value, 0, CumulativeMaximums, ParentPid)
+        end,
+        Row
+    ).
 
-maximise_assignment([], _, Total, BestSoFar, _) when Total > BestSoFar ->
+maximise_assignment([], _, Total, BestSoFar, _, _) when Total > BestSoFar ->
     % We reached the end and this better than the best so far, so return that value.
     Total;
-maximise_assignment([], _, _, BestSoFar, _) ->
+maximise_assignment([], _, _, BestSoFar, _, _) ->
     % We reached the end, but it's less than the best so far, so skip it.
     BestSoFar;
-maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHere | CumulativeMaximums]) ->
-        % Early Termination Test 1:
-        % Do a quick check to see what the maximum possible is from this position,
-        % assuming we took the maximum from each subsequent row.  (We know this
-        % value because we pre-calculated cumulative maximums).  If we can't do
-        % better than the best, we don't need to go any further along this branch.
-        case (Total + MaxFromHere) =< BestSoFar of
-            true ->
-                % Can't do better than the best from here, so terminate early.
-                BestSoFar;
-            false ->
-                % Otherwise, we have to keep going, sort the cells in this row 
-                % descending by value, aftering filtering out those that already 
-                % are used according to the column bitmask.
-                SortedAvailableColumns = lists:reverse(
-                    lists:keysort(2, 
-                        lists:filter(fun({Mask, _}) -> 
-                                (Mask band ColumnBitMask) == 0
-                            end,
-                            Row
-                        )
-                    )
-                ),
+maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHere | CumulativeMaximums], ParentPid) ->
+    receive
+        {new_minimum, BestFromController} ->
+            NewBest = case BestFromController > BestSoFar of
+                true ->
+                    %io:format("Pid ~p got new best ~p from controller~n", [self(), BestFromController]),
+                    BestFromController;
+                false ->
+                    BestSoFar
+            end
+    after 0 ->
+            NewBest = BestSoFar
+    end,
+    % Early Termination Test 1:
+    % Do a quick check to see what the maximum possible is from this position,
+    % assuming we took the maximum from each subsequent row.  (We know this
+    % value because we pre-calculated cumulative maximums).  If we can't do
+    % better than the best, we don't need to go any further along this branch.
+    case (Total + MaxFromHere) =< NewBest of
+        true ->
+            % Can't do better than the best from here, so terminate early.
+            NewBest;
+        false ->
+            % Otherwise, we have to keep going, sort the cells in this row 
+            % descending by value, aftering filtering out those that already 
+            % are used according to the column bitmask.
+            SortedAvailableColumns = lists:filter(fun({Mask, _}) -> 
+                    (Mask band ColumnBitMask) == 0
+                end,
+                Row
+            ),
 
-                lists:foldl(fun({Mask, Value}, BestSoFarIncrement) ->
-                        PathAnswer = maximise_assignment(Matrix, ColumnBitMask bor Mask, Total + Value, BestSoFarIncrement, CumulativeMaximums),
-                        case PathAnswer > BestSoFarIncrement of
-                            true ->
-                                % The path starting from this column is better than the
-                                % best so far so store that result as the answer.
-                                PathAnswer;
-                            false ->
-                                % The path starting from this column is less valuable 
-                                % than the best so far, so stick with what we have.
-                                BestSoFarIncrement
-                        end
-                    end,
-                    BestSoFar,
-                    SortedAvailableColumns
-                )
-        end.
+            FinalAnswer = lists:foldl(fun({Mask, Value}, BestSoFarIncrement) ->
+                    PathAnswer = maximise_assignment(Matrix, ColumnBitMask bor Mask, Total + Value, BestSoFarIncrement, CumulativeMaximums, ParentPid),
+                    case PathAnswer > BestSoFarIncrement of
+                        true ->
+                            % The path starting from this column is better than the
+                            % best so far so store that result as the answer.
+                            PathAnswer;
+                        false ->
+                            % The path starting from this column is less valuable 
+                            % than the best so far, so stick with what we have.
+                            BestSoFarIncrement
+                    end
+                end,
+                NewBest,
+                SortedAvailableColumns
+            ),
+            case FinalAnswer > NewBest of
+                true ->
+                    %io:format("Pid ~p updating parent with new best ~p~n", [self(), FinalAnswer]),
+                    ParentPid ! {new_best, self(), FinalAnswer};
+                false ->
+                    ok
+            end,
+            FinalAnswer
+    end.
 
 % Given a matrix, maximises the total obtainable by taking at most one element
 % from each column and each row (the assignment problem).  Returns the total
@@ -311,3 +355,45 @@ maximise_assignment_dynamic([Row | Matrix], ColumnBitMask) ->
             ets:insert(assignment, {ColumnBitMask, PathTotal}),
             PathTotal
     end.
+
+parallel_map(Function, List) ->
+    % Distributes mapping function to multiple child processes,
+    % then gathers the results and returns the values. After code in the 
+    % Erlang book by Joe Armstrong.
+    Self = self(),
+    Pids = lists:map(fun(Item) ->
+        spawn(fun() -> execute(Self, Function, Item) end)
+    end, List),
+    gather(Pids).
+
+execute(Parent, Function, Item) ->
+    % Perform the function and send the result back to the parent.
+    Parent ! {finished, self(), (catch Function(Item, Parent))}.
+
+gather(Pids) ->
+    gather(Pids, 0).
+
+gather([], Result) ->
+    Result;
+gather(Pids, BestSoFar) ->
+    % Gather up all the results into a result list.
+    receive
+        {new_best, Pid, Best} -> 
+            %io:format("Received new best ~p from ~p~n", [Best, Pid]),
+            update_processes(lists:delete(Pid, Pids), Best),
+            gather(Pids, BestSoFar);
+        {finished, Pid, Result} ->
+            io:format("Pid ~p finished with result ~p~n", [Pid, Result]),
+            case Result > BestSoFar of
+                true ->
+                    gather(lists:delete(Pid, Pids), Result);
+                false ->
+                    gather(lists:delete(Pid, Pids), BestSoFar)
+            end
+    end.
+
+update_processes([], _) ->
+    ok;
+update_processes([Pid | Pids], Best) ->
+    Pid ! {new_minimum, Best},
+    update_processes(Pids, Best).
