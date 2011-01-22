@@ -199,6 +199,10 @@ row_sort(Sorter, Matrix) ->
 % By choosing the highest value from each row deterministically, we maximise the 
 % opportunities to terminate early. The work is distributed across N processes, with
 % a central controller to track the best result found by each and update the workers.
+%
+% This completes in under 10 seconds for most matrices where N <= 30.  However, certain
+% matrix layouts take a few minutes to solve completely.  This largely depends on the
+% cumulative maximum versus the number of rows in the matrix.
 -spec maximise_assignment(num_matrix()) -> {float(), [{integer(), integer()}]}.
 maximise_assignment(Matrix) ->
     [_ | CumulativeMaximums] = lists:reverse(cumulative_maximum(lists:reverse(Matrix))),
@@ -211,7 +215,7 @@ maximise_assignment(Matrix) ->
         )
     ),
     
-    parallel_map(fun({Mask, Value}, ParentPid) ->
+    parallelise_assignment(fun({Mask, Value}, ParentPid) ->
             maximise_assignment(PreparedMatrix, Mask, Value, 0, CumulativeMaximums, ParentPid)
         end,
         Row
@@ -282,6 +286,50 @@ maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHer
             FinalAnswer
     end.
 
+parallelise_assignment(Function, List) ->
+    % Distributes mapping function to multiple child processes,
+    % then gathers the results and returns the values. After code in the 
+    % Erlang book by Joe Armstrong.
+    Self = self(),
+    Pids = lists:map(fun(Item) ->
+        spawn(fun() -> execute(Self, Function, Item) end)
+    end, List),
+    assignment_results_gather(Pids).
+
+execute(Parent, Function, Item) ->
+    % Perform the function and send the result back to the parent.
+    Parent ! {finished, self(), (catch Function(Item, Parent))}.
+
+assignment_results_gather(Pids) ->
+    assignment_results_gather(Pids, 0).
+
+assignment_results_gather([], Result) ->
+    Result;
+assignment_results_gather(Pids, BestSoFar) ->
+    % Gather up all the results into a result list.
+    receive
+        {new_best, Pid, Best} -> 
+            %io:format("Received new best ~p from ~p~n", [Best, Pid]),
+            update_processes(lists:delete(Pid, Pids), new_minimum, Best),
+            assignment_results_gather(Pids, BestSoFar);
+        {finished, Pid, Result} ->
+            io:format("Pid ~p finished with result ~p~n", [Pid, Result]),
+            case Result > BestSoFar of
+                true ->
+                    assignment_results_gather(lists:delete(Pid, Pids), Result);
+                false ->
+                    assignment_results_gather(lists:delete(Pid, Pids), BestSoFar)
+            end
+    end.
+
+update_processes([], Message, _) ->
+    ok;
+update_processes([Pid | Pids], Message, Best) ->
+    Pid ! {Message, Best},
+    update_processes(Pids, Message, Best).
+
+
+
 % Given a matrix, maximises the total obtainable by taking at most one element
 % from each column and each row (the assignment problem).  Returns the total
 % and a list of column/row pairs used in the solution.
@@ -290,9 +338,11 @@ maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHer
 %
 % This approach uses dynamic programming and memoises partial results in an
 % ets table.  This works fine for N < 20, but is expensive for memory as it
-% is not tail recursive.  Because of the use of shared ets resources, it is also
-% not highly parallelisable.
-% 
+% is not tail recursive.  This solution is not highly parallelisable because
+% each worker will need the same kind of bitmasks at about the right time.  With
+% the overhead of message passing back to a controller to save each partial answer
+% it actually turns out faster in many cases to just run a single thread.
+%
 % Algorithm after Larry's answer on Stack Overflow:
 % http://stackoverflow.com/questions/2809334/best-way-to-get-the-highest-sum-from-a-matrix-using-java-but-algorithm-is-the-is/2810604#2810604
 %
@@ -342,44 +392,3 @@ maximise_assignment_dynamic([Row | Matrix], ColumnBitMask) ->
             PathTotal
     end.
 
-parallel_map(Function, List) ->
-    % Distributes mapping function to multiple child processes,
-    % then gathers the results and returns the values. After code in the 
-    % Erlang book by Joe Armstrong.
-    Self = self(),
-    Pids = lists:map(fun(Item) ->
-        spawn(fun() -> execute(Self, Function, Item) end)
-    end, List),
-    gather(Pids).
-
-execute(Parent, Function, Item) ->
-    % Perform the function and send the result back to the parent.
-    Parent ! {finished, self(), (catch Function(Item, Parent))}.
-
-gather(Pids) ->
-    gather(Pids, 0).
-
-gather([], Result) ->
-    Result;
-gather(Pids, BestSoFar) ->
-    % Gather up all the results into a result list.
-    receive
-        {new_best, Pid, Best} -> 
-            %io:format("Received new best ~p from ~p~n", [Best, Pid]),
-            update_processes(lists:delete(Pid, Pids), Best),
-            gather(Pids, BestSoFar);
-        {finished, Pid, Result} ->
-            io:format("Pid ~p finished with result ~p~n", [Pid, Result]),
-            case Result > BestSoFar of
-                true ->
-                    gather(lists:delete(Pid, Pids), Result);
-                false ->
-                    gather(lists:delete(Pid, Pids), BestSoFar)
-            end
-    end.
-
-update_processes([], _) ->
-    ok;
-update_processes([Pid | Pids], Best) ->
-    Pid ! {new_minimum, Best},
-    update_processes(Pids, Best).
