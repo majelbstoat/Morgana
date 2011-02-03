@@ -221,25 +221,30 @@ maximise_assignment(Matrix) ->
         Row
     ).
 
-maximise_assignment([], _, Total, BestSoFar, _, _) when Total > BestSoFar ->
+
+update_best(BestSoFar) ->
+    receive
+        {new_minimum, BestFromController} ->
+            case BestFromController > BestSoFar of
+                true ->
+                    %io:format("Pid ~p got new best ~p from controller~n", [self(), BestFromController]),
+                    update_best(BestFromController);
+                false ->
+                    update_best(BestSoFar)
+            end
+    after 0 ->
+            BestSoFar
+    end.
+
+maximise_assignment([], _, Total, BestSoFar, _, ParentPid) when Total > BestSoFar ->
     % We reached the end and this better than the best so far, so return that value.
+    ParentPid ! {new_best, self(), Total},
     Total;
 maximise_assignment([], _, _, BestSoFar, _, _) ->
     % We reached the end, but it's less than the best so far, so skip it.
     BestSoFar;
 maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHere | CumulativeMaximums], ParentPid) ->
-    receive
-        {new_minimum, BestFromController} ->
-            NewBest = case BestFromController > BestSoFar of
-                true ->
-                    %io:format("Pid ~p got new best ~p from controller~n", [self(), BestFromController]),
-                    BestFromController;
-                false ->
-                    BestSoFar
-            end
-    after 0 ->
-            NewBest = BestSoFar
-    end,
+    NewBest = update_best(BestSoFar),
     % Early Termination Test 1:
     % Do a quick check to see what the maximum possible is from this position,
     % assuming we took the maximum from each subsequent row.  (We know this
@@ -250,8 +255,7 @@ maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHer
             % Can't do better than the best from here, so terminate early.
             NewBest;
         false ->
-            % Otherwise, we have to keep going, sort the cells in this row 
-            % descending by value, aftering filtering out those that already 
+            % Otherwise, we have to keep going, so filter out those that already 
             % are used according to the column bitmask.
             SortedAvailableColumns = lists:filter(fun({Mask, _}) -> 
                     (Mask band ColumnBitMask) == 0
@@ -259,7 +263,7 @@ maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHer
                 Row
             ),
 
-            FinalAnswer = lists:foldl(fun({Mask, Value}, BestSoFarIncrement) ->
+            lists:foldl(fun({Mask, Value}, BestSoFarIncrement) ->
                     PathAnswer = maximise_assignment(Matrix, ColumnBitMask bor Mask, Total + Value, BestSoFarIncrement, CumulativeMaximums, ParentPid),
                     case PathAnswer > BestSoFarIncrement of
                         true ->
@@ -274,16 +278,7 @@ maximise_assignment([Row | Matrix], ColumnBitMask, Total, BestSoFar, [MaxFromHer
                 end,
                 NewBest,
                 SortedAvailableColumns
-            ),
-
-            case FinalAnswer > NewBest of
-                true ->
-                    %io:format("Pid ~p updating parent with new best ~p~n", [self(), FinalAnswer]),
-                    ParentPid ! {new_best, self(), FinalAnswer};
-                false ->
-                    ok
-            end,
-            FinalAnswer
+            )
     end.
 
 parallelise_assignment(Function, List) ->
